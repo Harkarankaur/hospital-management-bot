@@ -1,0 +1,19 @@
+# Web frameworks
+flask
+fastapi
+uvicorn
+streamlit
+
+# HTTP clients
+requests>=2.28
+httpx
+
+# Database
+psycopg2-binary
+
+# Utilities
+faker>=18.0.0
+python-dotenv
+
+# APIs
+openai
