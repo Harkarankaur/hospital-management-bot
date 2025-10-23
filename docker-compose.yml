@@ -1,5 +1,22 @@
 
 services:
+  streamlit:
+    build:
+      context: ./bot 
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    depends_on:
+      - medplum-server
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile1
+    ports:
+      - "8000:8000"
+    depends_on:
+      - medplum-server
   postgres:
     image: postgres:16
     restart: always
@@ -133,6 +150,17 @@ services:
     ports:
       - "8000:8000"
       - "8501:8501"
-    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
-    
-    
+    volumes:
+    - ./bot/data/chroma:/data/chroma
+    command: /app/start.sh
+  medplum-generator:
+    build:
+      context: ./bot
+      # dockerfile: Dockerfile_medplum_generator   # remove this line
+    env_file:
+      - ./bot/.env
+    container_name: medplum-generator
+    depends_on:
+      - medplum-server
+    restart: "no"
+    command: ["python", "medplum_data.py"]

@@ -2,8 +2,8 @@ import os, httpx
 from dotenv import load_dotenv
 
 load_dotenv()
+MEDPLUM_BASE_URL = os.getenv("MEDPLUM_BASE_URL")
 
-MEDPLUM_BASE = os.getenv("MEDPLUM_BASE", "https://api.medplum.com/fhir/R4")
 MEDPLUM_TOKEN = os.getenv("MEDPLUM_TOKEN")
 
 async def medplum_get(resource: str, params: dict = None):
@@ -13,7 +13,7 @@ async def medplum_get(resource: str, params: dict = None):
 
     headers = {"Authorization": f"Bearer {MEDPLUM_TOKEN}"}
     async with httpx.AsyncClient() as client:
-        response = await client.get(f"{MEDPLUM_BASE}/{resource}", headers=headers, params=params)
+        response = await client.get(f"{MEDPLUM_BASE_URL}/{resource}", headers=headers, params=params)
         response.raise_for_status()
         return response.json()
 
@@ -38,3 +38,19 @@ async def get_observation_data(query: str):
         params = {}
     data = await medplum_get("Observation", params)
     return data.get("entry", [])
+async def get_resource(resource: str, params: dict = None):
+    """Generic fetch from Medplum"""
+    data = await medplum_get(resource, params)
+    return data.get("entry", [])
+
+RESOURCE_MAP = {
+    "patient": get_patient_data,
+    "observation": get_observation_data,
+    "condition": lambda q: get_resource("Condition", {"code": "diabetes"})
+}
+
+async def query_medplum(query: str):
+    for k, func in RESOURCE_MAP.items():
+        if k in query.lower():
+            return await func(query)
+    return await get_resource("Observation")

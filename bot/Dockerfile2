@@ -1,0 +1,5 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install requests faker python-dotenv
+CMD ["python", "medplum_data.py"]

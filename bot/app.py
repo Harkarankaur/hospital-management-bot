@@ -5,15 +5,53 @@ import psycopg2
 from dotenv import load_dotenv
 
 # LangChain imports
-from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain_experimental.sql import SQLDatabase, SQLDatabaseChain
+from langchain_community.chat_models import ChatOpenAI
+from langchain_community.vectorstores import Chroma
+from fastapi import FastAPI
+from langchain.sql_database import SQLDatabase
+from langchain_experimental.sql import SQLDatabaseChain
+
+import asyncio
+from medplum_client import query_medplum  # your async wrapper function
+
+
+load_dotenv()
+app = FastAPI()
+
+####end points
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+@app.get("/dbtest")
+def db_test():
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASS")
+        )
+        conn.close()
+        return {"db": "ok"}
+    except Exception as e:
+        return {"db": "fail", "error": str(e)}
+
+@app.get("/medplumtest")
+def medplum_test():
+    try:
+        headers = {"Authorization": f"Bearer {os.getenv('MEDPLUM_TOKEN')}"}
+        r = requests.get(f"{os.getenv('MEDPLUM_BASE_URL')}/Patient", headers=headers, timeout=15)
+        r.raise_for_status()
+        return {"medplum": "ok"}
+    except Exception as e:
+        return {"medplum": "fail", "error": str(e)}
+
 
 # ============= CONFIG ==================
-load_dotenv()
+
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_HOST = os.getenv("DB_HOST")
@@ -136,16 +174,10 @@ if run and query:
                 response = sql_chain.run(query)
                 st.subheader("Database Result")
                 st.write(response)
-
         elif chosen == "medplum":
             try:
-                if "diabetes" in query.lower():
-                    endpoint = "Condition?code:text=diabetes&_include=Condition:subject"
-                elif "patient" in query.lower():
-                    endpoint = "Patient"
-                else:
-                    endpoint = "Observation"
-                result = medplum_query(endpoint)
+        # Run async Medplum query safely in Streamlit
+                result = asyncio.run(query_medplum(query))
                 st.subheader("Medplum FHIR Response")
                 st.json(result)
             except Exception as e:

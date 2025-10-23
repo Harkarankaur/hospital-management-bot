@@ -3,6 +3,9 @@ flask
 fastapi
 uvicorn
 streamlit
+langchain==0.0.300
+langchain-community
+langchain-experimental
 
 # HTTP clients
 requests>=2.28
@@ -10,7 +13,8 @@ httpx
 
 # Database
 psycopg2-binary
-
+sqlparse
+chromadb
 # Utilities
 faker>=18.0.0
 python-dotenv
