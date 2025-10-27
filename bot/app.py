@@ -3,7 +3,7 @@ import streamlit as st
 import requests
 import psycopg2
 from dotenv import load_dotenv
-
+import httpx
 # LangChain imports
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
@@ -13,7 +13,7 @@ from langchain_community.vectorstores import Chroma
 from fastapi import FastAPI
 from langchain.sql_database import SQLDatabase
 from langchain_experimental.sql import SQLDatabaseChain
-
+import pandas as pd
 import asyncio
 from medplum_client import query_medplum  # your async wrapper function
 
@@ -121,14 +121,57 @@ def get_rag_chain():
 
 # ============= MEDPLUM ==================
 
-def medplum_query(query: str):
+import httpx
+import asyncio
+
+async def query_medplum_async(query: str):
+    """Fetch all Patient data from Medplum, similar to the Medplum web app."""
     if not (MEDPLUM_BASE_URL and MEDPLUM_TOKEN):
-        raise RuntimeError("Medplum not configured.")
-    headers = {"Authorization": f"Bearer {MEDPLUM_TOKEN}", "Accept": "application/fhir+json"}
-    url = f"{MEDPLUM_BASE_URL.rstrip('/')}/{query.lstrip('/')}"
-    r = requests.get(url, headers=headers, timeout=15)
-    r.raise_for_status()
-    return r.json()
+        raise RuntimeError("Medplum not configured")
+
+    headers = {
+        "Authorization": f"Bearer {MEDPLUM_TOKEN}",
+        "Accept": "application/fhir+json"
+    }
+
+    endpoint = "Patient"
+    url = f"{MEDPLUM_BASE_URL.rstrip('/')}/{endpoint}"
+
+    all_results = []
+    async with httpx.AsyncClient() as client:
+        while url:
+            resp = await client.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            for entry in data.get("entry", []):
+                resource = entry.get("resource", {})
+                patient = {
+                    "ID": resource.get("id", ""),
+                    "Name": " ".join(
+                        [n.get("given", [""])[0] + " " + n.get("family", "")
+                        for n in resource.get("name", [])]
+                    ) if resource.get("name") else "",
+                    "Gender": resource.get("gender", ""),
+                    "BirthDate": resource.get("birthDate", ""),
+                    "Phone": next(
+                        (t["value"] for t in resource.get("telecom", []) if t["system"] == "phone"), ""
+                    ),
+                    "Email": next(
+                        (t["value"] for t in resource.get("telecom", []) if t["system"] == "email"), ""
+                    ),
+                    "City": resource.get("address", [{}])[0].get("city", "") if resource.get("address") else "",
+                    "State": resource.get("address", [{}])[0].get("state", "") if resource.get("address") else "",
+                    "LastUpdated": resource.get("meta", {}).get("lastUpdated", "")
+                }
+                all_results.append(patient)
+
+            # Handle pagination (FHIR uses 'link' for next page)
+            next_links = [l["url"] for l in data.get("link", []) if l.get("relation") == "next"]
+            url = next_links[0] if next_links else None
+
+    return all_results
+
 
 # ============= ORCHESTRATOR ==================
 
@@ -146,8 +189,8 @@ def route_query(query: str, source: str):
 
 # ============= STREAMLIT UI ==================
 
-st.set_page_config(page_title="LangChain SQL + RAG + Medplum Bot", layout="wide")
-st.title("🧠 Intelligent Text-to-SQL + RAG + Medplum Agent")
+st.set_page_config(page_title="Bot", layout="wide")
+st.title("Medical Bot")
 
 query = st.text_area("Enter your question:", height=120)
 source = st.selectbox("Select source:", ["auto", "db", "medplum", "rag"])
@@ -176,12 +219,18 @@ if run and query:
                 st.write(response)
         elif chosen == "medplum":
             try:
-        # Run async Medplum query safely in Streamlit
-                result = asyncio.run(query_medplum(query))
+                result = asyncio.run(query_medplum_async(query))
                 st.subheader("Medplum FHIR Response")
-                st.json(result)
+
+                if result:
+                    df = pd.DataFrame(result)
+                    st.dataframe(df)
+                else:
+                    st.warning("No patient data found.")
+
             except Exception as e:
                 st.error(f"Medplum error: {e}")
+
 
         elif chosen == "rag":
             rag_chain = get_rag_chain()

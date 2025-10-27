@@ -10,7 +10,7 @@ from typing import Optional, Dict, List
 # Initialize Faker and API
 fake = Faker()
 # Medplum FHIR API base URL server
-BASE_URL = os.getenv("MEDPLUM_URL", "http://medplum-server:8103/fhir/R4")
+BASE_URL = os.getenv("MEDPLUM_BASE_URL", "http://medplum-server:8103/fhir/R4")
 TOKEN = os.getenv("MEDPLUM_TOKEN")
 
 

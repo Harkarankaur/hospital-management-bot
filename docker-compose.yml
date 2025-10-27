@@ -1,17 +1,21 @@
 
 services:
   streamlit:
-    build:
+    container_name: hospital-management-bot-streamlit
+    build: 
       context: ./bot 
       dockerfile: Dockerfile
     ports:
       - "8501:8501"
     depends_on:
-      - medplum-server
+      - fastapi
+    environment:
+      - BACKEND_URL=http://fastapi:8000
 
   fastapi:
-    build:
-      context: .
+    container_name: hospital-management-bot-fastapi
+    build: 
+      context:  ./bot 
       dockerfile: Dockerfile1
     ports:
       - "8000:8000"
@@ -138,21 +142,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-  text2sql-bot:
-    build: ./bot
-    env_file:
-      - ./bot/.env
-    container_name: text2sql-bot
-    restart: always
-    depends_on:
-      - medplum-server
-      - postgres
-    ports:
-      - "8000:8000"
-      - "8501:8501"
-    volumes:
-    - ./bot/data/chroma:/data/chroma
-    command: /app/start.sh
+
   medplum-generator:
     build:
       context: ./bot
