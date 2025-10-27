@@ -146,7 +146,7 @@ services:
   medplum-generator:
     build:
       context: ./bot
-      # dockerfile: Dockerfile_medplum_generator   # remove this line
+      dockerfile: Dockerfile2
     env_file:
       - ./bot/.env
     container_name: medplum-generator
