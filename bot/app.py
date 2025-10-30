@@ -1,3 +1,4 @@
+##worked adding db file to this not working yet
 import os
 import streamlit as st
 import requests
@@ -8,14 +9,14 @@ import httpx
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_community.vectorstores import Chroma
 from fastapi import FastAPI
 from langchain.sql_database import SQLDatabase
 from langchain_experimental.sql import SQLDatabaseChain
 import pandas as pd
 import asyncio
-from medplum_client import query_medplum  # your async wrapper function
+from db import create_tables, fetch_all_data, insert_manual_patient
 
 
 load_dotenv()
@@ -48,10 +49,14 @@ def medplum_test():
         return {"medplum": "ok"}
     except Exception as e:
         return {"medplum": "fail", "error": str(e)}
-
-
+@app.get("/seed-medplum")
+def seed_medplum_endpoint():
+    try:
+        result = db.run_all()
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        return {"status": "fail", "error": str(e)}
 # ============= CONFIG ==================
-
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_HOST = os.getenv("DB_HOST")
@@ -118,59 +123,181 @@ def get_rag_chain():
     retriever = vectordb.as_retriever(search_type="similarity", search_kwargs={"k": 4})
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=OPENAI_API_KEY)
     return RetrievalQA.from_chain_type(llm=llm, retriever=retriever, return_source_documents=True)
-
 # ============= MEDPLUM ==================
-
-import httpx
-import asyncio
-
-async def query_medplum_async(query: str):
-    """Fetch all Patient data from Medplum, similar to the Medplum web app."""
-    if not (MEDPLUM_BASE_URL and MEDPLUM_TOKEN):
+async def medplum_get(resource: str, params: dict = None):
+    """Fetch FHIR resource and convert to readable format."""
+    if not MEDPLUM_BASE_URL or not MEDPLUM_TOKEN:
         raise RuntimeError("Medplum not configured")
 
-    headers = {
-        "Authorization": f"Bearer {MEDPLUM_TOKEN}",
-        "Accept": "application/fhir+json"
+    headers = {"Authorization": f"Bearer {MEDPLUM_TOKEN}"}
+    endpoint = resource
+    url = f"{MEDPLUM_BASE_URL.rstrip('/')}/{endpoint}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url, headers=headers, params=params or {"_count": 20})
+        resp.raise_for_status()
+        data = resp.json()
+        return fhir_to_readable(resource, data)
+
+def fhir_to_readable(resource_type: str, data: dict):
+    """Convert FHIR bundle to readable dicts by resource type."""
+    readable = []
+
+    entries = data.get("entry", [])
+    for entry in entries:
+        res = entry.get("resource", {})
+
+        # Patient
+        if resource_type.lower() == "patient":
+            readable.append({
+                "id": res.get("id"),
+                "name": " ".join([
+                    *res.get("name", [{}])[0].get("given", []),
+                    res.get("name", [{}])[0].get("family", "")
+                ]).strip(),
+                "gender": res.get("gender", ""),
+                "birthDate": res.get("birthDate", ""),
+                "phone": res.get("telecom", [{}])[0].get("value", ""),
+                "address": res.get("address", [{}])[0].get("city", ""),
+            })
+
+        # Practitioner
+        elif resource_type.lower() == "practitioner":
+            readable.append({
+                "id": res.get("id"),
+                "name": " ".join([
+                    *res.get("name", [{}])[0].get("given", []),
+                    res.get("name", [{}])[0].get("family", "")
+                ]).strip(),
+                "qualification": ", ".join([
+                    q.get("code", {}).get("text", "")
+                    for q in res.get("qualification", [])
+                ]) or "N/A",
+                "mail": res.get("telecom", [{}])[0].get("value", ""),
+            })
+
+        # Condition
+        elif resource_type.lower() == "condition":
+            readable.append({
+                "id": res.get("id"),
+                "patient": res.get("subject", {}).get("reference", ""),
+                "diagnosis": res.get("code", {}).get("text", ""),
+                "onsetDateTime": res.get("onsetDateTime", ""),
+            })
+
+        # Observation
+        elif resource_type.lower() == "observation":
+            readable.append({
+                "id": res.get("id"),
+                "patient": res.get("subject", {}).get("reference", ""),
+                "type": res.get("code", {}).get("text", ""),
+                "value": res.get("valueQuantity", {}).get("value", ""),
+                "unit": res.get("valueQuantity", {}).get("unit", ""),
+                "date": res.get("effectiveDateTime", ""),
+            })
+
+        # Appointment
+        elif resource_type.lower() == "appointment":
+            readable.append({
+                "id": res.get("id"),
+                "status": res.get("status", ""),
+                "patient": next(
+                    (a.get("actor", {}).get("reference", "")
+                    for a in res.get("participant", [])
+                    if "Patient" in a.get("actor", {}).get("reference", "")), ""),
+                "practitioner": next(
+                    (a.get("actor", {}).get("reference", "")
+                    for a in res.get("participant", [])
+                    if "Practitioner" in a.get("actor", {}).get("reference", "")), ""),
+                "start": res.get("start", ""),
+                "end": res.get("end", ""),
+            })
+
+        # Encounter
+        elif resource_type.lower() == "encounter":
+            readable.append({
+                "id": res.get("id"),
+                "patient": res.get("subject", {}).get("reference", ""),
+                "status": res.get("status", ""),
+                "class": res.get("class", {}).get("code", ""),
+                "start": res.get("period", {}).get("start", ""),
+                "end": res.get("period", {}).get("end", ""),
+            })
+
+        # Default (fallback)
+        else:
+            readable.append(res)
+
+    return readable
+
+async def fetch_all_medplum_resources():
+    """Fetch all major resource types"""
+    resource_types = [
+        "Patient",
+        "Practitioner",
+        "Observation",
+        "Condition",
+        "Appointment",
+        "Encounter",
+        "Medication",
+        "AllergyIntolerance",
+        "Procedure"
+    ]
+
+    all_resources = {}
+
+    for resource_type in resource_types:
+        try:
+            response = await medplum_get(resource_type)
+            all_resources[resource_type] = response
+        except Exception as e:
+            all_resources[resource_type] = {"error": str(e)}
+
+    return all_resources
+
+async def get_patients(query: str):
+    return await medplum_get("Patient")
+
+async def get_practitioners(query: str):
+    return await medplum_get("Practitioner")
+
+async def get_observations(query: str):
+    return await medplum_get("Observation")
+
+async def get_conditions(query: str):
+    return await medplum_get("Condition")
+
+async def query_medplum_async(query: str):
+    """Router to handle Medplum resource fetching"""
+    q = query.lower().strip()
+
+    # Fetch all resources
+    if "all resources" in q or "everything" in q or "all data" in q:
+        return await fetch_all_medplum_resources()
+
+    # Fetch specific resource
+    resource_map = {
+        "patient": "Patient",
+        "practitioner": "Practitioner",
+        "doctor": "Practitioner",
+        "observation": "Observation",
+        "vital": "Observation",
+        "condition": "Condition",
+        "disease": "Condition",
+        "appointment": "Appointment",
+        "encounter": "Encounter",
+        "medication": "Medication",
+        "allergy": "AllergyIntolerance",
+        "procedure": "Procedure",
     }
 
-    endpoint = "Patient"
-    url = f"{MEDPLUM_BASE_URL.rstrip('/')}/{endpoint}"
+    for key, resource in resource_map.items():
+        if key in q:
+            return await medplum_get(resource)
 
-    all_results = []
-    async with httpx.AsyncClient() as client:
-        while url:
-            resp = await client.get(url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
+    # Default fallback
+    return {"message": "Specify what data to fetch (e.g. 'list patients', 'get all resources', etc.)"}
 
-            for entry in data.get("entry", []):
-                resource = entry.get("resource", {})
-                patient = {
-                    "ID": resource.get("id", ""),
-                    "Name": " ".join(
-                        [n.get("given", [""])[0] + " " + n.get("family", "")
-                        for n in resource.get("name", [])]
-                    ) if resource.get("name") else "",
-                    "Gender": resource.get("gender", ""),
-                    "BirthDate": resource.get("birthDate", ""),
-                    "Phone": next(
-                        (t["value"] for t in resource.get("telecom", []) if t["system"] == "phone"), ""
-                    ),
-                    "Email": next(
-                        (t["value"] for t in resource.get("telecom", []) if t["system"] == "email"), ""
-                    ),
-                    "City": resource.get("address", [{}])[0].get("city", "") if resource.get("address") else "",
-                    "State": resource.get("address", [{}])[0].get("state", "") if resource.get("address") else "",
-                    "LastUpdated": resource.get("meta", {}).get("lastUpdated", "")
-                }
-                all_results.append(patient)
 
-            # Handle pagination (FHIR uses 'link' for next page)
-            next_links = [l["url"] for l in data.get("link", []) if l.get("relation") == "next"]
-            url = next_links[0] if next_links else None
-
-    return all_results
 
 
 # ============= ORCHESTRATOR ==================
@@ -179,10 +306,10 @@ def route_query(query: str, source: str):
     """Simple heuristic router: chooses SQL, Medplum, or RAG."""
     q = query.lower()
     if source == "auto":
-        if any(k in q for k in ["patient", "condition", "fhir", "medplum", "observation"]):
-            source = "medplum" if MEDPLUM_TOKEN else "rag"
-        elif any(k in q for k in ["count", "average", "report", "total"]):
+        if any(k in q for k in ["patient", "doctor", "appointment", "hospital", "ward", "report", "record", "admission", "age", "gender", "disease", "condition", "count", "average", "total", "list", "show", "get"]):
             source = "db"
+        elif any(k in q for k in ["fhir", "medplum", "observation", "practitioner", "vital"]):
+            source = "medplum"
         else:
             source = "rag"
     return source
@@ -222,14 +349,22 @@ if run and query:
                 result = asyncio.run(query_medplum_async(query))
                 st.subheader("Medplum FHIR Response")
 
-                if result:
+                if isinstance(result, dict):
+                    for resource_type, data in result.items():
+                        st.markdown(f"### {resource_type}")
+                        if isinstance(data, dict) and "error" in data:
+                            st.error(f"Error: {data['error']}")
+                        elif isinstance(data, list) and len(data) > 0:
+                            df = pd.DataFrame(data)
+                            st.dataframe(df)
+                        else:
+                            st.warning("No records found.")
+                else:
                     df = pd.DataFrame(result)
                     st.dataframe(df)
-                else:
-                    st.warning("No patient data found.")
 
             except Exception as e:
-                st.error(f"Medplum error: {e}")
+                st.error(f"Medplum query failed: {e}")
 
 
         elif chosen == "rag":
@@ -246,3 +381,5 @@ if run and query:
 
 st.markdown("---")
 st.caption("🔒 Safe, single-file agent demo — built with LangChain + Streamlit + PostgreSQL + Medplum")
+
+

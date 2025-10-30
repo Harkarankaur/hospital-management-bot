@@ -1,4 +1,4 @@
-
+version: "3.9"
 services:
   streamlit:
     container_name: hospital-management-bot-streamlit
@@ -20,14 +20,25 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - medplum-server
+      postgres:
+        condition: service_healthy
+      medplum-server:
+        condition: service_healthy
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DB_HOST=postgres
+      - DB_NAME=hospital_db
+      - DB_USER=postgres
+      - DB_PASS=postgres
+      - MEDPLUM_BASE_URL=http://medplum-server:8103
   postgres:
     image: postgres:16
+    container_name: postgres
     restart: always
     environment:
-      - POSTGRES_USER=medplum
-      - POSTGRES_PASSWORD=medplum
-      - POSTGRES_DB=medplum
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=hospital_db
     command:
       # We use command line args instead of a postgres.conf to avoid additional setup out of the box
       - "postgres"
